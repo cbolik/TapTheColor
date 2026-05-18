@@ -16,55 +16,61 @@
     'use strict';
 
     const canvas = document.getElementById('c');
-    const ctx = canvas.getContext('2d');
+    const ctx    = canvas.getContext('2d');
 
     let W = 0, H = 0;
-    const HALF = 22;   // half of 44 px visual size
-    const HIT  = 32;   // half of hit area (with tap tolerance)
+
+    const BASE_HALF = 22;  // starting half-size → 44 px diameter
+    const MIN_HALF  = 10;  // minimum half-size → 20 px diameter
+    const HIT_PAD   = 10;  // extra tap tolerance beyond visual edge
 
     const SHAPES = ['circle', 'square', 'triangle'];
 
-    let phase     = 'intro'; // 'intro' | 'active' | 'result'
+    let phase     = 'intro'; // 'intro' | 'waiting' | 'active' | 'result'
     let bgColor   = '';
     let bgHue     = 0;
     let shape     = null;
+    let shapeHalf = BASE_HALF;
     let startTime = 0;
     let lastTime  = null;
-    let bestTime  = localStorage.getItem('ttc_best') !== null
-                    ? parseInt(localStorage.getItem('ttc_best'), 10)
-                    : null;
+    let streak    = 0;
+    let waitTimer = null;
 
-    // ── Colours ───────────────────────────────────────────────────────────────
+    let bestTime = localStorage.getItem('ttc_best') !== null
+                   ? parseInt(localStorage.getItem('ttc_best'), 10)
+                   : null;
+
+    // ── Colours ─────────────────────────────────────────────────────────────
 
     function randBg() {
       bgHue    = Math.random() * 360;
-      const s  = 55 + Math.random() * 25;  // 55–80 %
-      const l  = 38 + Math.random() * 20;  // 38–58 %
+      const s  = 55 + Math.random() * 25;
+      const l  = 38 + Math.random() * 20;
       bgColor  = `hsl(${bgHue},${s}%,${l}%)`;
     }
 
     function randShapeColor() {
-      const h = (bgHue + 150 + Math.random() * 60) % 360; // 150–210 ° offset
+      const h = (bgHue + 150 + Math.random() * 60) % 360;
       const s = 70 + Math.random() * 20;
       const l = 48 + Math.random() * 18;
       return `hsl(${h},${s}%,${l}%)`;
     }
 
-    // ── Shape drawing ─────────────────────────────────────────────────────────
+    // ── Drawing ───────────────────────────────────────────────────────────────
 
-    function shapePath(x, y) {
+    function tracePath(x, y, half) {
       ctx.beginPath();
       switch (shape.type) {
         case 'circle':
-          ctx.arc(x, y, HALF, 0, Math.PI * 2);
+          ctx.arc(x, y, half, 0, Math.PI * 2);
           break;
         case 'square':
-          ctx.rect(x - HALF, y - HALF, HALF * 2, HALF * 2);
+          ctx.rect(x - half, y - half, half * 2, half * 2);
           break;
         case 'triangle':
-          ctx.moveTo(x,        y - HALF);
-          ctx.lineTo(x + HALF, y + HALF);
-          ctx.lineTo(x - HALF, y + HALF);
+          ctx.moveTo(x,        y - half);
+          ctx.lineTo(x + half, y + half);
+          ctx.lineTo(x - half, y + half);
           ctx.closePath();
           break;
       }
@@ -74,8 +80,18 @@
       ctx.fillStyle = bgColor;
       ctx.fillRect(0, 0, W, H);
       ctx.fillStyle = shape.color;
-      shapePath(shape.x, shape.y);
+      tracePath(shape.x, shape.y, shapeHalf);
       ctx.fill();
+    }
+
+    function drawWaiting() {
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(0, 0, W, H);
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font         = '20px system-ui,sans-serif';
+      ctx.fillStyle    = 'rgba(255,255,255,0.2)';
+      ctx.fillText('• • •', W / 2, H * 0.92);
     }
 
     function drawResult() {
@@ -96,12 +112,16 @@
       ctx.font      = `${fs2}px system-ui,sans-serif`;
       ctx.fillStyle = 'rgba(255,255,255,0.75)';
       const bestLabel = bestTime !== null ? `${bestTime} ms` : '—';
-      ctx.fillText(`Best: ${bestLabel}`, cx, cy + H * 0.04);
+      ctx.fillText(`Best: ${bestLabel}`, cx, cy + H * 0.035);
 
-      const fs3 = Math.max(14, Math.min(18, W * 0.038));
+      const fs3 = Math.max(13, Math.min(17, W * 0.036));
       ctx.font      = `${fs3}px system-ui,sans-serif`;
       ctx.fillStyle = 'rgba(255,255,255,0.45)';
-      ctx.fillText('Tap anywhere to play again', cx, cy + H * 0.11);
+      const nextHalf = Math.max(MIN_HALF, BASE_HALF - streak);
+      ctx.fillText(`Round ${streak}  ·  next shape ${nextHalf * 2} px`, cx, cy + H * 0.085);
+
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.fillText('Tap anywhere to continue', cx, cy + H * 0.13);
     }
 
     function drawIntro() {
@@ -122,49 +142,65 @@
       ctx.fillStyle = 'rgba(255,255,255,0.65)';
       ctx.fillText('Tap the shape — as fast as you can!', cx, cy + H * 0.02);
 
-      const fs3 = Math.max(14, Math.min(18, W * 0.038));
+      const fs3 = Math.max(13, Math.min(17, W * 0.036));
       ctx.font      = `${fs3}px system-ui,sans-serif`;
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.fillText('Shape shrinks each round — keep going!', cx, cy + H * 0.07);
+
       ctx.fillStyle = 'rgba(255,255,255,0.4)';
-      ctx.fillText('Tap anywhere to start', cx, cy + H * 0.1);
+      ctx.fillText('Tap anywhere to start', cx, cy + H * 0.13);
     }
 
     function redraw() {
-      if (phase === 'intro')  { drawIntro();  return; }
-      if (phase === 'active') { drawGame();   return; }
-      if (phase === 'result') { drawResult(); return; }
+      switch (phase) {
+        case 'intro':   drawIntro();   break;
+        case 'waiting': drawWaiting(); break;
+        case 'active':  drawGame();    break;
+        case 'result':  drawResult();  break;
+      }
     }
 
     // ── Hit detection ─────────────────────────────────────────────────────────
 
     function hitShape(tx, ty) {
-      const dx = tx - shape.x;
-      const dy = ty - shape.y;
+      const dx  = tx - shape.x;
+      const dy  = ty - shape.y;
+      const hit = shapeHalf + HIT_PAD;
       switch (shape.type) {
         case 'circle':
-          return dx * dx + dy * dy <= HIT * HIT;
+          return dx * dx + dy * dy <= hit * hit;
         case 'square':
-          return Math.abs(dx) <= HIT && Math.abs(dy) <= HIT;
+          return Math.abs(dx) <= hit && Math.abs(dy) <= hit;
         case 'triangle':
-          // Expanded bounding-box approximation
-          return Math.abs(dx) <= HIT && dy >= -(HALF + 10) && dy <= HALF + 10;
+          return Math.abs(dx) <= hit && dy >= -hit && dy <= hit;
       }
       return false;
     }
 
-    // ── Game flow ─────────────────────────────────────────────────────────────
+    // ── Game flow ────────────────────────────────────────────────────────────
 
-    function startRound() {
+    function showShape() {
+      phase = 'active';
+      redraw();
+      startTime = performance.now();
+    }
+
+    function beginWait(fromIntro) {
+      clearTimeout(waitTimer);
+      if (fromIntro) streak = 0;
+      shapeHalf = Math.max(MIN_HALF, BASE_HALF - streak);
+
       randBg();
-      const margin = HALF + 24;
+      const margin = BASE_HALF + 24;
       shape = {
         type:  SHAPES[Math.floor(Math.random() * SHAPES.length)],
         x:     margin + Math.random() * (W - margin * 2),
         y:     margin + Math.random() * (H - margin * 2),
         color: randShapeColor()
       };
-      phase = 'active';
+      phase = 'waiting';
       redraw();
-      startTime = performance.now();
+      waitTimer = setTimeout(showShape, 1000 + Math.random() * 2000);
     }
 
     function onTap(clientX, clientY) {
@@ -172,10 +208,8 @@
       const x = (clientX - rect.left) * (W / rect.width);
       const y = (clientY - rect.top)  * (H / rect.height);
 
-      if (phase === 'intro' || phase === 'result') {
-        startRound();
-        return;
-      }
+      if (phase === 'intro')  { beginWait(true);  return; }
+      if (phase === 'result') { beginWait(false); return; }
 
       if (phase === 'active' && hitShape(x, y)) {
         lastTime = Math.round(performance.now() - startTime);
@@ -183,12 +217,13 @@
           bestTime = lastTime;
           localStorage.setItem('ttc_best', lastTime);
         }
+        streak++;
         phase = 'result';
         redraw();
       }
     }
 
-    // ── Events ────────────────────────────────────────────────────────────────
+    // ── Events ─────────────────────────────────────────────────────────────────
 
     canvas.addEventListener('pointerdown', e => {
       e.preventDefault();
@@ -201,10 +236,10 @@
       const dpr = window.devicePixelRatio || 1;
       W = window.innerWidth;
       H = window.innerHeight;
-      canvas.width         = Math.round(W * dpr);
-      canvas.height        = Math.round(H * dpr);
-      canvas.style.width   = W + 'px';
-      canvas.style.height  = H + 'px';
+      canvas.width        = Math.round(W * dpr);
+      canvas.height       = Math.round(H * dpr);
+      canvas.style.width  = W + 'px';
+      canvas.style.height = H + 'px';
       ctx.scale(dpr, dpr);
       redraw();
     }
