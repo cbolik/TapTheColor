@@ -211,15 +211,20 @@
       if (phase === 'intro')  { beginWait(true);  return; }
       if (phase === 'result') { beginWait(false); return; }
 
-      if (phase === 'active' && hitShape(x, y)) {
-        lastTime = Math.round(performance.now() - startTime);
-        if (bestTime === null || lastTime < bestTime) {
-          bestTime = lastTime;
-          localStorage.setItem('ttc_best', lastTime);
+      if (phase === 'active') {
+        if (hitShape(x, y)) {
+          lastTime = Math.round(performance.now() - startTime);
+          if (bestTime === null || lastTime < bestTime) {
+            bestTime = lastTime;
+            localStorage.setItem('ttc_best', lastTime);
+          }
+          streak++;
+          phase = 'result';
+          redraw();
+        } else {
+          // Missed — restart the round without advancing the streak
+          beginWait(false);
         }
-        streak++;
-        phase = 'result';
-        redraw();
       }
     }
 
